@@ -1,57 +1,72 @@
 from flask import Flask, render_template, request
+import os
+import json
+import numpy as np
 from tensorflow.keras.preprocessing import image
 from tensorflow import keras
-import numpy as np
-import json
-import os
 import gdown
-import zipfile
 
 app = Flask(__name__)
 
-# ---------------------------
-# Configuration for model download
-# ---------------------------
-GDRIVE_MODEL_ID = os.environ.get("1iwbyfuFVGcwDAWORLdZRHkeEB2VlP-z8")          # model.h5
-GDRIVE_CLASS_ID = os.environ.get("1cfTP2ABfRuzCGaHR3sFth5FxUuac9NVM")          # class_indices.json
-GDRIVE_DISEASE_ID = os.environ.get("1NaTVv_8OjCLQw9CMhyzJM6TlBblT3dwO")      # disease_info.json
-MODEL_DIR = "model"
+# ============================
+# STEP 1: LOCAL FILE NAMES
+# ============================
+
+MODEL_FILE = "plant_disease_model.h5"
+CLASS_FILE = "class_indices.json"
+DISEASE_FILE = "disease_info.json"
+
+# ============================
+# STEP 2: DOWNLOAD FROM GOOGLE DRIVE SAFELY
+# ============================
+
+def download_file(file_id, output_file):
+    """Download a file from Google Drive using gdown, with error handling"""
+    if not os.path.exists(output_file):
+        try:
+            print(f"Downloading {output_file} from Google Drive...")
+            gdown.download(f"https://drive.google.com/uc?id={file_id}", output_file, quiet=False)
+            print(f"{output_file} downloaded successfully.")
+        except Exception as e:
+            print(f"Failed to download {output_file}. Check permissions and File ID.")
+            print(e)
+
+# Download model and JSON files
+download_file(os.environ.get('GDRIVE_MODEL_ID'), MODEL_FILE)
+download_file(os.environ.get('GDRIVE_CLASS_ID'), CLASS_FILE)
+download_file(os.environ.get('GDRIVE_DISEASE_ID'), DISEASE_FILE)
+
+# ============================
+# STEP 3: LOAD MODEL AND JSON DATA
+# ============================
+
+try:
+    model = keras.models.load_model(MODEL_FILE)
+except Exception as e:
+    print("Error loading model:", e)
+    model = None
+
+try:
+    with open(CLASS_FILE, "r") as f:
+        class_indices = json.load(f)
+        idx_to_class = {v: k for k, v in class_indices.items()}
+except Exception as e:
+    print("Error loading class indices:", e)
+    idx_to_class = {}
+
+try:
+    with open(DISEASE_FILE, "r") as f:
+        disease_info = json.load(f)
+except Exception as e:
+    print("Error loading disease info:", e)
+    disease_info = {}
+
 IMG_SIZE = 128
 
-os.makedirs(MODEL_DIR, exist_ok=True)
+# ============================
+# STEP 4: FLASK ROUTE
+# ============================
 
-def download_file(file_id, output_path):
-    if not os.path.exists(output_path):
-        url = f"https://drive.google.com/uc?id={file_id}"
-        gdown.download(url, output_path, quiet=False)
-        # If zip file, extract
-        if zipfile.is_zipfile(output_path):
-            with zipfile.ZipFile(output_path, 'r') as zip_ref:
-                zip_ref.extractall(MODEL_DIR)
-            os.remove(output_path)
-
-# ---------------------------
-# Download model & JSON files
-# ---------------------------
-download_file(GDRIVE_MODEL_ID, os.path.join(MODEL_DIR, "model.h5"))
-download_file(GDRIVE_CLASS_ID, os.path.join(MODEL_DIR, "class_indices.json"))
-download_file(GDRIVE_DISEASE_ID, os.path.join(MODEL_DIR, "disease_info.json"))
-
-# ---------------------------
-# Load model & metadata
-# ---------------------------
-model = keras.models.load_model(os.path.join(MODEL_DIR, "model.h5"))
-
-with open(os.path.join(MODEL_DIR, "class_indices.json"), "r") as f:
-    class_indices = json.load(f)
-idx_to_class = {v: k for k, v in class_indices.items()}
-
-with open(os.path.join(MODEL_DIR, "disease_info.json"), "r") as f:
-    disease_info = json.load(f)
-
-# ---------------------------
-# Flask routes
-# ---------------------------
 @app.route("/", methods=["GET", "POST"])
 def home():
     predictions = None
@@ -59,8 +74,9 @@ def home():
     suggestion = None
 
     if request.method == "POST":
-        file = request.files["leaf_image"]
-        if file:
+        file = request.files.get("leaf_image")
+        if file and model is not None:
+            # Save uploaded file temporarily
             file_path = os.path.join("static", file.filename)
             file.save(file_path)
 
@@ -73,10 +89,11 @@ def home():
             pred = model.predict(img_array)[0]
             top_indices = pred.argsort()[-3:][::-1]
             predictions = [
-                {"class": idx_to_class[i], "confidence": float(pred[i]) * 100}
+                {"class": idx_to_class.get(i, "Unknown"), "confidence": float(pred[i]) * 100}
                 for i in top_indices
             ]
 
+            # Get suggestions for the top prediction
             top_class = predictions[0]["class"]
             suggestion = disease_info.get(top_class, None)
 
@@ -84,5 +101,9 @@ def home():
         "index.html", predictions=predictions, file_path=file_path, suggestion=suggestion
     )
 
+# ============================
+# STEP 5: RUN APP
+# ============================
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
