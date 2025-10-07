@@ -1,72 +1,61 @@
 from flask import Flask, render_template, request
-import os
-import json
-import numpy as np
 from tensorflow.keras.preprocessing import image
 from tensorflow import keras
+import numpy as np
+import json
+import os
 import gdown
 
 app = Flask(__name__)
 
-# ============================
-# STEP 1: LOCAL FILE NAMES
-# ============================
+# ===============================
+# 🔹 STEP 1: DOWNLOAD FILES FROM GOOGLE DRIVE
+# ===============================
+# These environment variables must be set in Render dashboard
+MODEL_ID = os.environ.get("GDRIVE_MODEL_ID")
+CLASS_ID = os.environ.get("GDRIVE_CLASS_ID")
+DISEASE_ID = os.environ.get("GDRIVE_DISEASE_ID")
 
-MODEL_FILE = "plant_disease_model.h5"
-CLASS_FILE = "class_indices.json"
-DISEASE_FILE = "disease_info.json"
+os.makedirs("model", exist_ok=True)
 
-# ============================
-# STEP 2: DOWNLOAD FROM GOOGLE DRIVE SAFELY
-# ============================
+MODEL_PATH = "model/plant_disease_model.h5"
+CLASS_PATH = "model/class_indices.json"
+DISEASE_PATH = "model/disease_info.json"
 
-def download_file(file_id, output_file):
-    """Download a file from Google Drive using gdown, with error handling"""
-    if not os.path.exists(output_file):
-        try:
-            print(f"Downloading {output_file} from Google Drive...")
-            gdown.download(f"https://drive.google.com/uc?id={file_id}", output_file, quiet=False)
-            print(f"{output_file} downloaded successfully.")
-        except Exception as e:
-            print(f"Failed to download {output_file}. Check permissions and File ID.")
-            print(e)
+def download_from_gdrive(file_id, output_path):
+    """Download file from Google Drive using its file ID."""
+    if not file_id:
+        raise ValueError(f"Missing Google Drive ID for {output_path}")
+    url = f"https://drive.google.com/uc?id={file_id}"
+    if not os.path.exists(output_path):
+        print(f"⬇️ Downloading {output_path} from Google Drive...")
+        gdown.download(url, output_path, quiet=False)
+    else:
+        print(f"✅ {output_path} already exists, skipping download.")
 
-# Download model and JSON files
-download_file(os.environ.get('GDRIVE_MODEL_ID'), MODEL_FILE)
-download_file(os.environ.get('GDRIVE_CLASS_ID'), CLASS_FILE)
-download_file(os.environ.get('GDRIVE_DISEASE_ID'), DISEASE_FILE)
+# Download all model files
+download_from_gdrive(MODEL_ID, MODEL_PATH)
+download_from_gdrive(CLASS_ID, CLASS_PATH)
+download_from_gdrive(DISEASE_ID, DISEASE_PATH)
 
-# ============================
-# STEP 3: LOAD MODEL AND JSON DATA
-# ============================
+# ===============================
+# 🔹 STEP 2: LOAD MODEL AND DATA
+# ===============================
+print("✅ Loading model and class info...")
+model = keras.models.load_model(MODEL_PATH)
 
-try:
-    model = keras.models.load_model(MODEL_FILE)
-except Exception as e:
-    print("Error loading model:", e)
-    model = None
+with open(CLASS_PATH, "r") as f:
+    class_indices = json.load(f)
+idx_to_class = {v: k for k, v in class_indices.items()}
 
-try:
-    with open(CLASS_FILE, "r") as f:
-        class_indices = json.load(f)
-        idx_to_class = {v: k for k, v in class_indices.items()}
-except Exception as e:
-    print("Error loading class indices:", e)
-    idx_to_class = {}
-
-try:
-    with open(DISEASE_FILE, "r") as f:
-        disease_info = json.load(f)
-except Exception as e:
-    print("Error loading disease info:", e)
-    disease_info = {}
+with open(DISEASE_PATH, "r") as f:
+    disease_info = json.load(f)
 
 IMG_SIZE = 128
 
-# ============================
-# STEP 4: FLASK ROUTE
-# ============================
-
+# ===============================
+# 🔹 STEP 3: FLASK ROUTES
+# ===============================
 @app.route("/", methods=["GET", "POST"])
 def home():
     predictions = None
@@ -74,8 +63,8 @@ def home():
     suggestion = None
 
     if request.method == "POST":
-        file = request.files.get("leaf_image")
-        if file and model is not None:
+        file = request.files["leaf_image"]
+        if file:
             # Save uploaded file temporarily
             file_path = os.path.join("static", file.filename)
             file.save(file_path)
@@ -89,11 +78,11 @@ def home():
             pred = model.predict(img_array)[0]
             top_indices = pred.argsort()[-3:][::-1]
             predictions = [
-                {"class": idx_to_class.get(i, "Unknown"), "confidence": float(pred[i]) * 100}
+                {"class": idx_to_class[i], "confidence": float(pred[i]) * 100}
                 for i in top_indices
             ]
 
-            # Get suggestions for the top prediction
+            # Get suggestions for top prediction
             top_class = predictions[0]["class"]
             suggestion = disease_info.get(top_class, None)
 
@@ -101,9 +90,9 @@ def home():
         "index.html", predictions=predictions, file_path=file_path, suggestion=suggestion
     )
 
-# ============================
-# STEP 5: RUN APP
-# ============================
-
+# ===============================
+# 🔹 STEP 4: PORT BINDING FOR RENDER
+# ===============================
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))  # Render provides PORT automatically
+    app.run(host="0.0.0.0", port=port)
